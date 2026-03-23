@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import "dotenv/config";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -18,6 +17,38 @@ const API_BASE =
   "https://x402-reputation-api-production.up.railway.app";
 
 const PRIVATE_KEY = process.env.EVM_PRIVATE_KEY || process.env.AGENT_PRIVATE_KEY || "";
+
+// ---------------------------------------------------------------------------
+// Local Cache — avoids duplicate paid API calls
+// ---------------------------------------------------------------------------
+class LocalCache<T> {
+  private store = new Map<string, { data: T; expiresAt: number }>();
+
+  constructor(private defaultTTLMinutes: number) {}
+
+  get(key: string): T | null {
+    const entry = this.store.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      this.store.delete(key);
+      return null;
+    }
+    return entry.data;
+  }
+
+  set(key: string, data: T, ttlMinutes?: number): void {
+    const ttl = (ttlMinutes ?? this.defaultTTLMinutes) * 60 * 1000;
+    this.store.set(key, { data, expiresAt: Date.now() + ttl });
+  }
+
+  get size(): number {
+    return this.store.size;
+  }
+}
+
+const analyzeCache = new LocalCache<unknown>(30);
+const compareCache = new LocalCache<unknown>(30);
+const monitorCache = new LocalCache<unknown>(10);
 
 // ---------------------------------------------------------------------------
 // x402 Fetch Client — auto-pays 402 responses with USDC
@@ -70,7 +101,7 @@ async function callAPI(endpoint: string, body: Record<string, unknown>): Promise
 // ---------------------------------------------------------------------------
 const server = new McpServer({
   name: "reputation-intelligence",
-  version: "1.0.0",
+  version: "1.1.0",
 });
 
 // ---------------------------------------------------------------------------
@@ -96,11 +127,21 @@ server.registerTool(
     }),
   },
   async ({ product, context }) => {
-    const body: Record<string, unknown> = { product };
-    if (context) body.context = context;
+    const cacheKey = `analyze:${product.toLowerCase()}:${context || ""}`;
+    const cached = analyzeCache.get(cacheKey);
+    if (cached) {
+      console.error(`[Cache HIT] analyze: ${product}`);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(cached, null, 2) }],
+      };
+    }
 
     try {
+      const body: Record<string, unknown> = { product };
+      if (context) body.context = context;
       const data = await callAPI("/analyze", body);
+      analyzeCache.set(cacheKey, data);
+      console.error(`[Cache SET] analyze: ${product}`);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };
@@ -134,8 +175,19 @@ server.registerTool(
     }),
   },
   async ({ products }) => {
+    const cacheKey = `compare:${products.map(p => p.toLowerCase()).sort().join(",")}`;
+    const cached = compareCache.get(cacheKey);
+    if (cached) {
+      console.error(`[Cache HIT] compare: ${products.join(", ")}`);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(cached, null, 2) }],
+      };
+    }
+
     try {
       const data = await callAPI("/compare", { products });
+      compareCache.set(cacheKey, data);
+      console.error(`[Cache SET] compare: ${products.join(", ")}`);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };
@@ -167,8 +219,19 @@ server.registerTool(
     }),
   },
   async ({ product }) => {
+    const cacheKey = `monitor:${product.toLowerCase()}`;
+    const cached = monitorCache.get(cacheKey);
+    if (cached) {
+      console.error(`[Cache HIT] monitor: ${product}`);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(cached, null, 2) }],
+      };
+    }
+
     try {
       const data = await callAPI("/monitor", { product });
+      monitorCache.set(cacheKey, data);
+      console.error(`[Cache SET] monitor: ${product}`);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };
@@ -188,3 +251,4 @@ server.registerTool(
 const transport = new StdioServerTransport();
 await server.connect(transport);
 console.error("🔍 Reputation Intelligence MCP server running on stdio");
+console.error(`📦 Cache TTL: analyze=30min, compare=30min, monitor=10min`);
