@@ -8,7 +8,7 @@ import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
 import { ExactEvmScheme, toClientEvmSigner } from "@x402/evm";
 import { createWalletClient, createPublicClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { base } from "viem/chains";
 import express from "express";
 
 // ---------------------------------------------------------------------------
@@ -52,10 +52,10 @@ let payFetch: typeof fetch;
 
 if (PRIVATE_KEY) {
   const account = privateKeyToAccount(PRIVATE_KEY as `0x${string}`);
-  const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http() });
-  const publicClient = createPublicClient({ chain: baseSepolia, transport: http() });
+  const walletClient = createWalletClient({ account, chain: base, transport: http() });
+  const publicClient = createPublicClient({ chain: base, transport: http() });
   const signer = toClientEvmSigner({ ...walletClient, address: account.address }, publicClient);
-  const client = new x402Client().register("eip155:84532", new ExactEvmScheme(signer));
+  const client = new x402Client().register("eip155:8453", new ExactEvmScheme(signer));
   payFetch = wrapFetchWithPayment(fetch, client);
   console.error(`💰 x402 payments enabled (wallet: ${account.address})`);
 } else {
